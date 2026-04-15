@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document viewer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <main class="app">
+        <header class="app__header">
+            <h1>Document viewer</h1>
+            <p class="app__hint">Choose an image or PDF to preview. PDFs open in an embedded viewer (your browser’s PDF support).</p>
+        </header>
+
+        <section class="panel" aria-label="Upload">
+            <label class="file-label" for="imageInput">Image or PDF</label>
+            <input type="file" id="imageInput" accept="image/*,application/pdf" />
+        </section>
+
+        <section class="panel preview-panel" aria-label="Preview">
+            <h2>Preview</h2>
+            <div class="preview-frame">
+                <p id="previewPlaceholder" class="preview-placeholder">No file selected.</p>
+                <img id="preview" class="preview-image" alt="" hidden />
+                <iframe id="pdfPreview" class="preview-pdf" title="PDF preview" hidden></iframe>
+            </div>
+        </section>
+
+        <section class="panel" aria-label="Metadata">
+            <h2>Analysis</h2>
+            <pre id="analysis" class="analysis-output">—</pre>
+        </section>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
