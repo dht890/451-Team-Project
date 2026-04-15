@@ -30,6 +30,14 @@ function ensurePort8000Banner() {
   text.style.marginBottom = "10px";
   banner.append(text);
 
+  const p = document.createElement("p");
+  p.textContent = "Run the command: uvicorn main:app --reload";
+  banner.append(p);
+
+  const p2 = document.createElement("p");
+  p2.textContent = "Then click the button below to go to the correct port.";
+  banner.append(p2);
+
   const btn = document.createElement("button");
   btn.type = "button";
   btn.textContent = "Go to port 8000";
