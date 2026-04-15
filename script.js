@@ -77,21 +77,6 @@ function setOutput(text) {
   analysisEl.textContent = text;
 }
 
-function setOutputErrorWithLink({ beforeLink, href, afterLink }) {
-  analysisEl.textContent = "";
-
-  analysisEl.append(document.createTextNode(beforeLink));
-
-  const a = document.createElement("a");
-  a.href = href;
-  a.textContent = href;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  analysisEl.append(a);
-
-  analysisEl.append(document.createTextNode(afterLink));
-}
-
 function setPreview(type, data) {
   // Always start clean
   revokeUrl();
@@ -215,10 +200,6 @@ input.addEventListener("change", () => {
       );
     })
     .catch(() => {
-      setOutputErrorWithLink({
-        beforeLink: "Run command: uvicorn main:app --reload \nGo to ",
-        href: "http://127.0.0.1:8000/",
-        afterLink: " to view the document.",
-      });
+      setOutput("Failed to analyze the file. Is the backend running?");
     });
 });
