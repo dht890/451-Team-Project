@@ -1,3 +1,7 @@
+[hidden] {
+    display: none !important;
+}
+
 *,
 *::before,
 *::after {
@@ -61,6 +65,7 @@ body {
 }
 
 .preview-placeholder {
+    text-align: center;
     margin: 0;
     color: #666;
     font-size: 0.9rem;

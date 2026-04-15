@@ -57,13 +57,13 @@ function ensurePort8000Banner() {
 
 ensurePort8000Banner();
 
-/** Revoked when the file changes so blob: URLs don’t leak. */
-let pdfObjectUrl = null;
+/** Revoked when the file changes so blob: URLs don't leak. */
+let previewObjectUrl = null;
 
-function revokePdfUrl() {
-  if (pdfObjectUrl) {
-    URL.revokeObjectURL(pdfObjectUrl);
-    pdfObjectUrl = null;
+function revokeUrl() {
+  if (previewObjectUrl) {
+    URL.revokeObjectURL(previewObjectUrl);
+    previewObjectUrl = null;
   }
 }
 
@@ -92,40 +92,45 @@ function setOutputErrorWithLink({ beforeLink, href, afterLink }) {
   analysisEl.append(document.createTextNode(afterLink));
 }
 
-function showImagePreview(dataUrl, fileName) {
-  revokePdfUrl();
-  pdfPreview.removeAttribute("src");
-  pdfPreview.hidden = true;
+function setPreview(type, data) {
+  // Always start clean
+  revokeUrl();
 
-  preview.src = dataUrl;
-  preview.alt = fileName ? `Preview: ${fileName}` : "Selected image preview";
-  preview.hidden = false;
-  previewPlaceholder.hidden = true;
-}
-
-function showPdfPreview(file) {
-  preview.removeAttribute("src");
-  preview.hidden = true;
-
-  revokePdfUrl();
-  pdfObjectUrl = URL.createObjectURL(file);
-  pdfPreview.src = pdfObjectUrl;
-  pdfPreview.hidden = false;
-  previewPlaceholder.hidden = true;
-}
-
-function clearPreview() {
-  revokePdfUrl();
-  pdfPreview.removeAttribute("src");
-  pdfPreview.hidden = true;
-
+  // Reset everything
   preview.removeAttribute("src");
   preview.alt = "";
   preview.hidden = true;
-  previewPlaceholder.hidden = false;
-  setOutput("—");
+  preview.style.display = "none";
+
+  pdfPreview.removeAttribute("src");
+  pdfPreview.hidden = true;
+  pdfPreview.style.display = "none";
+
+  previewPlaceholder.hidden = true;
+
+  // Render based on type
+  if (type === "image") {
+    preview.src = data.url;
+    preview.alt = data.fileName
+      ? `Preview: ${data.fileName}`
+      : "Selected image preview";
+    preview.hidden = false;
+    preview.style.display = "block";
+  } else if (type === "pdf") {
+    previewObjectUrl = URL.createObjectURL(data.file);
+    pdfPreview.src = previewObjectUrl;
+    pdfPreview.hidden = false;
+    pdfPreview.style.display = "block";
+  } else {
+    // fallback (no preview)
+    previewPlaceholder.hidden = false;
+  }
 }
 
+function clearPreview() {
+  setPreview("none");
+  setOutput("—");
+}
 /**
  * Optional: POST the file to the FastAPI backend when it is running.
  * Safe to fail silently when the server is off (local file preview still works).
@@ -147,33 +152,37 @@ async function analyzeWithBackend(file) {
   return response.json();
 }
 
+/** Incremented on each selection to ignore stale async callbacks. */
+let currentFileToken = 0;
 input.addEventListener("change", () => {
   const file = input.files?.[0];
+  const token = ++currentFileToken;
+
+  clearPreview();
 
   if (!file) {
-    clearPreview();
     return;
   }
 
   if (isPdfFile(file)) {
-    showPdfPreview(file);
+    setPreview("pdf", { file });
   } else if ((file.type || "").toLowerCase().startsWith("image/")) {
     const reader = new FileReader();
+
     reader.addEventListener("load", () => {
+      if (token !== currentFileToken) return;
+
       if (typeof reader.result === "string") {
-        showImagePreview(reader.result, file.name);
+        setPreview("image", {
+          url: reader.result,
+          fileName: file.name,
+        });
       }
     });
+
     reader.readAsDataURL(file);
   } else {
-    // No local preview for non-image docs (txt/docx/etc).
-    revokePdfUrl();
-    pdfPreview.removeAttribute("src");
-    pdfPreview.hidden = true;
-    preview.removeAttribute("src");
-    preview.alt = "";
-    preview.hidden = true;
-    previewPlaceholder.hidden = false;
+    setPreview("none");
   }
 
   setOutput("Analyzing…");
@@ -207,8 +216,7 @@ input.addEventListener("change", () => {
     })
     .catch(() => {
       setOutputErrorWithLink({
-        beforeLink:
-          "Run command: uvicorn main:app --reload \nGo to ",
+        beforeLink: "Run command: uvicorn main:app --reload \nGo to ",
         href: "http://127.0.0.1:8000/",
         afterLink: " to view the document.",
       });
