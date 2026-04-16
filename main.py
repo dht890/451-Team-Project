@@ -9,10 +9,14 @@ Open: http://127.0.0.1:8000/
 
 from pathlib import Path
 
+from docx import Document as DocxDocument
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pypdf import PdfReader
+
+from report import LLM, run_report_on_text
 
 
 def _is_pdf(upload: UploadFile) -> bool:
@@ -26,6 +30,42 @@ def _is_pdf(upload: UploadFile) -> bool:
 def _safe_filename(filename: str | None) -> str:
     # Prevent path traversal; keep only the final component.
     return Path(filename or "upload.bin").name
+
+
+def _extract_text_from_path(path: Path) -> tuple[str, str | None]:
+    """
+    Return (text, warning). Warning is set when text is empty or extraction is partial.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".txt":
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        return raw, None if raw.strip() else "File appears empty."
+
+    if suffix == ".pdf":
+        reader = PdfReader(str(path))
+        parts: list[str] = []
+        for page in reader.pages:
+            t = page.extract_text() or ""
+            if t.strip():
+                parts.append(t)
+        text = "\n\n".join(parts).strip()
+        if not text:
+            return "", "Could not extract text from PDF (may be scanned or encrypted)."
+        return text, None
+
+    if suffix == ".docx":
+        doc = DocxDocument(str(path))
+        paras = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
+        text = "\n\n".join(paras).strip()
+        if not text:
+            return "", "No text found in DOCX."
+        return text, None
+
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        return "", "Image uploads are not OCR-processed; use PDF or text for analysis."
+
+    return "", f"Unsupported type for text extraction: {suffix or '(no extension)'}"
+
 
 STATIC_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = STATIC_DIR / "uploads"
@@ -70,12 +110,41 @@ async def analyze(file: UploadFile = File(...)):
     # Server-side verification message (visible in server logs).
     print(message)
 
+    extracted, extraction_warning = _extract_text_from_path(dest_path)
+    report: dict[str, str] | None = None
+    summary_parts: list[str] = []
+    llm_model: str | None = None
+
+    if extracted.strip():
+        try:
+            llm = LLM()
+            llm_model = llm.model
+            report = run_report_on_text(extracted, llm=llm)
+            for section_key, answer in report.items():
+                title = section_key.replace("_", " ").title()
+                summary_parts.append(f"## {title}\n{answer}")
+        except Exception as exc:  # noqa: BLE001 — surface LLM/config errors to client
+            extraction_warning = (
+                f"Report generation failed ({type(exc).__name__}). "
+                "Set OPENAI_API_KEY and try again."
+            )
+            print(extraction_warning, exc)
+    else:
+        extraction_warning = extraction_warning or "No text extracted; report skipped."
+
+    summary = "\n\n".join(summary_parts) if summary_parts else ""
+
     return {
         "message": message,
         "filename": safe_name,
         "bytes": size_bytes,
         "content_type": file.content_type,
         "stored_as": f"/uploads/{safe_name}",
+        "extracted_text_chars": len(extracted),
+        "summary": summary,
+        "report": report,
+        "warning": extraction_warning,
+        "model": llm_model,
     }
 
 
