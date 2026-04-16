@@ -4,7 +4,7 @@
 3. activate venv: ```venv\Scripts\activate```
 5. install dependencies: ```pip install -r requirements.txt```
 6. Environment variables: Create a `.env` file in the root directory and add:
-```OPENAI_API_KEY="your_api_key_here"```
+```GEMINI_API_KEY="your_api_key_here"```
 7. run: ```uvicorn main:app --reload```
 8. follow the link ```http://127.0.0.1:8000```
 
