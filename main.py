@@ -6,7 +6,7 @@ Run from this folder, then open the app in the browser (same origin as /analyze)
 
 Open: http://127.0.0.1:8000/
 """
-
+ 
 from pathlib import Path
 
 from docx import Document as DocxDocument
@@ -17,7 +17,6 @@ from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader
 
 from report import LLM, run_report_on_text
-
 
 def _safe_filename(filename: str | None) -> str:
     # Prevent path traversal; keep only the final component.
