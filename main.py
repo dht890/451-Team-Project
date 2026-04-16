@@ -19,14 +19,6 @@ from pypdf import PdfReader
 from report import LLM, run_report_on_text
 
 
-def _is_pdf(upload: UploadFile) -> bool:
-    content_type = (upload.content_type or "").lower()
-    if content_type in {"application/pdf", "application/x-pdf"}:
-        return True
-    filename = upload.filename or ""
-    return filename.lower().endswith(".pdf")
-
-
 def _safe_filename(filename: str | None) -> str:
     # Prevent path traversal; keep only the final component.
     return Path(filename or "upload.bin").name
@@ -102,10 +94,8 @@ async def analyze(file: UploadFile = File(...)):
             size_bytes += len(chunk)
             f.write(chunk)
 
-    if _is_pdf(file):
-        message = f"PDF uploaded: {safe_name} ({size_bytes} bytes)"
-    else:
-        message = f"Document uploaded: {safe_name} ({size_bytes} bytes)"
+    kind = "PDF" if dest_path.suffix.lower() == ".pdf" else "Document"
+    message = f"{kind} uploaded: {safe_name} ({size_bytes} bytes)"
 
     # Server-side verification message (visible in server logs).
     print(message)

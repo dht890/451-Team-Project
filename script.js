@@ -77,6 +77,27 @@ function setOutput(text) {
   analysisEl.textContent = text;
 }
 
+/** Stable section order matching backend PREDEFINED_QUERIES keys. */
+function formatReportFromJson(report) {
+  if (!report || typeof report !== "object") return "";
+  const order = [
+    "termination",
+    "liability",
+    "payment",
+    "confidentiality",
+    "risks",
+  ];
+  const parts = [];
+  for (const key of order) {
+    if (!Object.prototype.hasOwnProperty.call(report, key)) continue;
+    const label = key
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+    parts.push(`## ${label}\n${String(report[key] ?? "").trim()}`);
+  }
+  return parts.join("\n\n").trim();
+}
+
 function setPreview(type, data) {
   // Always start clean
   revokeUrl();
@@ -114,7 +135,6 @@ function setPreview(type, data) {
 
 function clearPreview() {
   setPreview("none");
-  setOutput("—");
 }
 /**
  * Optional: POST the file to the FastAPI backend when it is running.
@@ -146,6 +166,7 @@ input.addEventListener("change", () => {
   clearPreview();
 
   if (!file) {
+    setOutput("—");
     return;
   }
 
@@ -174,6 +195,8 @@ input.addEventListener("change", () => {
 
   analyzeWithBackend(file)
     .then((data) => {
+      if (token !== currentFileToken) return;
+
       if (!data || typeof data !== "object") {
         setOutput(String(data));
         return;
@@ -184,6 +207,8 @@ input.addEventListener("change", () => {
       const warning = String(data.warning ?? "").trim();
       const model = String(data.model ?? "").trim();
       const extractedChars = data.extracted_text_chars ?? data.extractedTextChars;
+      const reportBody =
+        formatReportFromJson(data.report) || summary || "No report returned.";
 
       const headerLines = [
         message ? message : null,
@@ -195,11 +220,11 @@ input.addEventListener("change", () => {
       ].filter(Boolean);
 
       setOutput(
-        (headerLines.length ? headerLines.join("\n") + "\n\n" : "") +
-          (summary || "No summary returned.")
+        (headerLines.length ? headerLines.join("\n") + "\n\n" : "") + reportBody
       );
     })
     .catch(() => {
+      if (token !== currentFileToken) return;
       setOutput("Failed to analyze the file. Is the backend running?");
     });
 });
