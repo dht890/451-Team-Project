@@ -159,4 +159,3 @@ def ui_styles():
 # Serve the UI + uploaded files.
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
-

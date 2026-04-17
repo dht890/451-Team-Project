@@ -30,6 +30,7 @@ QUERY_KEYS = tuple(PREDEFINED_QUERIES.keys())
 _REPORT_CACHE_MAX = 64
 # Bump when pipeline/prompt changes so stale LRU entries are not reused.
 _REPORT_CACHE_SALT = "v4-json-schema-preprocess"
+_REPORT_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS = 5000
 
 # Gemini structured output (exact keys, valid JSON).
 def _report_response_schema() -> dict[str, object]:
@@ -147,6 +148,14 @@ class _ReportLRUCache:
 _report_cache = _ReportLRUCache(_REPORT_CACHE_MAX)
 
 
+def _response_hit_max_output_tokens(response: object) -> bool:
+    cands = getattr(response, "candidates", None) or []
+    if not cands:
+        return False
+    fr = getattr(cands[0], "finish_reason", None)
+    return fr == genai.types.FinishReason.MAX_TOKENS
+
+
 # ------------
 # LLM wrapper
 # ------------
@@ -176,30 +185,40 @@ class LLM:
         Also prints token usage when available.
         """
 
-        base_cfg: dict[str, object] = {
-            "temperature": 0.1,
-            "top_p": 0.9,
-            "max_output_tokens": max_output_tokens,
-        }
+        def _generate_once(tokens: int) -> object:
+            base_cfg: dict[str, object] = {
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "max_output_tokens": tokens,
+            }
+            try:
+                return self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config={
+                        **base_cfg,
+                        "response_mime_type": "application/json",
+                        "response_schema": _report_response_schema(),
+                    },
+                )
+            except Exception:
+                return self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=base_cfg,
+                )
 
-        # ---- Try structured JSON mode first ----
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config={
-                    **base_cfg,
-                    "response_mime_type": "application/json",
-                    "response_schema": _report_response_schema(),
-                },
+        response = _generate_once(max_output_tokens)
+        if (
+            _response_hit_max_output_tokens(response)
+            and max_output_tokens < _REPORT_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS
+        ):
+            print(
+                "\n[LLM] Output truncated at max_output_tokens="
+                f"{max_output_tokens}; retrying with "
+                f"{_REPORT_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS}.\n"
             )
-        except Exception:
-            # fallback to plain mode if schema fails
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=base_cfg,
-            )
+            response = _generate_once(_REPORT_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS)
 
         # ---- Extract outputs ----
         parsed = getattr(response, "parsed", None)
@@ -297,7 +316,7 @@ Definitions:
 - risks: penalties, unilateral rights, unusual obligations
 
 Rules:
-- Prefer copying exact phrases from the document
+- Summarize clauses concisely; avoid long verbatim copying
 - Use short bullet-style lines (newline separated)
 - Max ~3 bullets per field
 - Include partial matches if relevant
