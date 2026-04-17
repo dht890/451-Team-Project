@@ -10,6 +10,7 @@ const preview = document.getElementById("preview");
 const pdfPreview = document.getElementById("pdfPreview");
 const previewPlaceholder = document.getElementById("previewPlaceholder");
 const analysisEl = document.getElementById("analysis");
+const analysisOutputEl = document.getElementById("analysisOutput");
 
 function ensurePort8000Banner() {
   // If served from a dev server on the wrong port, guide users to 8000.
@@ -75,7 +76,11 @@ function isPdfFile(file) {
 }
 
 function setOutput(text) {
-  analysisEl.textContent = text;
+  if (analysisOutputEl) {
+    analysisOutputEl.textContent = text;
+  } else {
+    analysisEl.textContent = text;
+  }
 }
 
 /** Stable section order matching backend PREDEFINED_QUERIES keys. */

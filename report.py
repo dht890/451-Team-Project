@@ -40,9 +40,21 @@ def _report_response_schema() -> dict[str, object]:
     }
 
 
+import re
+
 def clean_text(text: str) -> str:
-    """Collapse whitespace/newlines — fewer tokens, same semantics."""
-    return " ".join(text.split())
+    """
+    Preserve structure (newlines) while still cleaning noise.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # remove excessive spaces but KEEP newlines
+    text = re.sub(r"[ \t]+", " ", text)
+
+    # optional: normalize multiple newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
 
 
 LEGAL_KEYWORDS = [
