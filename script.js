@@ -1,3 +1,4 @@
+//script.js
 /** Same origin when the page is served by FastAPI; fallback for file:// opens. */
 const API_BASE =
   window.location.protocol === "file:"

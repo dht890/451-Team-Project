@@ -1,3 +1,4 @@
+#main.py
 """
 Minimal FastAPI app: document upload + AI/LLM summary.
 
@@ -115,7 +116,6 @@ async def analyze(file: UploadFile = File(...)):
         except Exception as exc:  # noqa: BLE001 — surface LLM/config errors to client
             extraction_warning = (
                 f"Report generation failed ({type(exc).__name__}). "
-                "Set OPENAI_API_KEY and try again."
             )
             print(extraction_warning, exc)
     else:

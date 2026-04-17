@@ -1,3 +1,4 @@
+#report.py
 """
 Legal document report: RAG-free version using chunk summarization + predefined queries.
 """
