@@ -1,7 +1,7 @@
 #report.py
 """
-Legal document report: chunk extraction → Python merge → one batched JSON query.
-Optimized for low token use: small chunks, minimal overlap, compact prompts, caching.
+Legal document report: single LLM call over cleaned full text → JSON.
+No chunking, no merge step. Report LRU avoids repeat calls for identical text.
 """
 
 from __future__ import annotations
@@ -17,8 +17,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
 PREDEFINED_QUERIES = {
     "termination": "What are the termination conditions or exit clauses?",
     "liability": "What liability limitations or risk allocations exist?",
@@ -29,9 +27,17 @@ PREDEFINED_QUERIES = {
 
 QUERY_KEYS = tuple(PREDEFINED_QUERIES.keys())
 
-# LRU caps to avoid unbounded memory on long sessions
-_CHUNK_CACHE_MAX = 2000
 _REPORT_CACHE_MAX = 64
+# Bump when pipeline/prompt changes so stale LRU entries are not reused.
+_REPORT_CACHE_SALT = "v4-json-schema-preprocess"
+
+# Gemini structured output (exact keys, valid JSON).
+def _report_response_schema() -> dict[str, object]:
+    return {
+        "type": "OBJECT",
+        "properties": {k: {"type": "STRING"} for k in QUERY_KEYS},
+        "required": list(QUERY_KEYS),
+    }
 
 
 def clean_text(text: str) -> str:
@@ -39,27 +45,72 @@ def clean_text(text: str) -> str:
     return " ".join(text.split())
 
 
+LEGAL_KEYWORDS = [
+    "termination",
+    "terminate",
+    "cancellation",
+    "end of",
+    "expiration",
+    "liability",
+    "liable",
+    "indemnity",
+    "indemnify",
+    "damages",
+    "payment",
+    "fee",
+    "billing",
+    "charges",
+    "compensation",
+    "confidential",
+    "non-disclosure",
+    "nda",
+    "privacy",
+    "arbitration",
+    "dispute",
+    "governing law",
+    "breach",
+    "violation",
+    "rights",
+    "obligations",
+    "agreement",
+    "terms",
+    "services",
+]
+
+
+def _looks_legal(line: str) -> bool:
+    l = line.lower()
+    return any(k in l for k in LEGAL_KEYWORDS)
+
+
+def preprocess_document(text: str, context_window: int = 2) -> str:
+    """
+    Deterministic pre-filter: keep sentence-like units with legal signals plus
+    ±context_window neighbors. Targets large token reduction before the LLM.
+    """
+    text = re.sub(r"\s+", " ", text)
+    text = text.replace("\n", " ")
+    parts = re.split(r"(?<=[\.\;\:])\s+", text)
+    if not parts or (len(parts) == 1 and not parts[0].strip()):
+        return text.strip()
+
+    kept: set[int] = set()
+    for i, p in enumerate(parts):
+        if _looks_legal(p):
+            lo = max(0, i - context_window)
+            hi = min(len(parts), i + context_window + 1)
+            for j in range(lo, hi):
+                kept.add(j)
+
+    if not kept:
+        return text.strip()
+
+    filtered = [parts[i] for i in sorted(kept)]
+    return " ".join(filtered)
+
+
 def _sha256_utf8(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
-class _LRUCache:
-    def __init__(self, max_items: int) -> None:
-        self._max = max_items
-        self._data: OrderedDict[str, str] = OrderedDict()
-
-    def get(self, key: str) -> str | None:
-        val = self._data.get(key)
-        if val is not None:
-            self._data.move_to_end(key)
-        return val
-
-    def set(self, key: str, value: str) -> None:
-        if key in self._data:
-            self._data.move_to_end(key)
-        self._data[key] = value
-        while len(self._data) > self._max:
-            self._data.popitem(last=False)
 
 
 class _ReportLRUCache:
@@ -81,38 +132,7 @@ class _ReportLRUCache:
             self._data.popitem(last=False)
 
 
-_chunk_extraction_cache = _LRUCache(_CHUNK_CACHE_MAX)
 _report_cache = _ReportLRUCache(_REPORT_CACHE_MAX)
-
-
-# ---------
-# Chunking
-# ---------
-def chunk_text(text: str, max_chars: int = 800, overlap: int = 50) -> list[str]:
-    cleaned = clean_text(text).strip()
-    if not cleaned:
-        return []
-
-    if len(cleaned) <= max_chars:
-        return [cleaned]
-
-    chunks: list[str] = []
-    start = 0
-    n = len(cleaned)
-
-    while start < n:
-        end = min(start + max_chars, n)
-        piece = cleaned[start:end].strip()
-
-        if piece:
-            chunks.append(piece)
-
-        if end >= n:
-            break
-
-        start = max(0, end - overlap)
-
-    return chunks
 
 
 # ------------
@@ -129,57 +149,62 @@ class LLM:
             contents=prompt,
             config={
                 "temperature": 0.1,
+                "top_p": 0.9,
                 "max_output_tokens": max_output_tokens,
             },
         )
         return (response.text or "").strip()
 
+    def generate_report_payload(
+    self, prompt: str, *, max_output_tokens: int
+    ) -> tuple[object | None, str]:
+        """
+        Returns:
+            (parsed_json_if_available, raw_text)
+        Also prints token usage when available.
+        """
 
-# ----------------------------
-# Step 1: per-chunk extraction (not paraphrase summary)
-# ----------------------------
-def _extract_chunk(llm: LLM, chunk: str) -> str:
-    ck = _sha256_utf8(chunk)
-    hit = _chunk_extraction_cache.get(ck)
-    if hit is not None:
-        return hit
+        base_cfg: dict[str, object] = {
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "max_output_tokens": max_output_tokens,
+        }
 
-    prompt = (
-        "Extract legal facts from the text. Output ONLY plain lines (no intro).\n"
-        "Rules: max 5 lines; each line max 12 words; fragments/labels OK; "
-        "no full sentences; copy terms/numbers when present.\n\n"
-        f"{chunk}"
-    )
-    out = llm.generate(prompt, max_output_tokens=220)
-    _chunk_extraction_cache.set(ck, out)
-    return out
+        # ---- Try structured JSON mode first ----
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config={
+                    **base_cfg,
+                    "response_mime_type": "application/json",
+                    "response_schema": _report_response_schema(),
+                },
+            )
+        except Exception:
+            # fallback to plain mode if schema fails
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=base_cfg,
+            )
 
+        # ---- Extract outputs ----
+        parsed = getattr(response, "parsed", None)
+        raw = (response.text or "").strip()
 
-def _merge_extractions_python(extractions: list[str]) -> str:
-    """Dedupe lines; no LLM merge."""
-    seen_keys: set[str] = set()
-    lines_out: list[str] = []
+        # ---- TOKEN USAGE LOGGING ----
+        usage = getattr(response, "usage_metadata", None)
+        if usage:
+            print("\n===== TOKEN USAGE =====")
+            print(f"prompt_tokens: {getattr(usage, 'prompt_token_count', None)}")
+            print(f"output_tokens: {getattr(usage, 'candidates_token_count', None)}")
+            print(f"total_tokens: {getattr(usage, 'total_token_count', None)}")
+            print("=======================\n")
+        else:
+            print("\n[Token usage not available for this response]\n")
 
-    for block in extractions:
-        for line in block.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            # strip bullet prefixes for dedup stability
-            normalized = re.sub(r"^[-*•\d.)]+\s*", "", line).strip().lower()
-            if not normalized or normalized in seen_keys:
-                continue
-            seen_keys.add(normalized)
-            lines_out.append(line)
-
-    return "\n".join(lines_out) if lines_out else ""
-
-
-def _build_compressed_document(llm: LLM, chunks: list[str]) -> str:
-    extractions = [_extract_chunk(llm, c) for c in chunks]
-    if len(extractions) == 1:
-        return extractions[0].strip()
-    return _merge_extractions_python(extractions)
+        return parsed, raw
 
 
 def _strip_code_fence(text: str) -> str:
@@ -198,9 +223,34 @@ def _json_object_substring(text: str) -> str:
     return text[start : end + 1]
 
 
+def _coerce_to_answer_str(val: object) -> str:
+    """Model may return strings or lists of bullets; normalize to one string."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, (int, float, bool)):
+        return str(val).strip()
+    if isinstance(val, list):
+        lines = [_coerce_to_answer_str(x) for x in val]
+        return "\n".join(line for line in lines if line)
+    if isinstance(val, dict):
+        return json.dumps(val, ensure_ascii=False)
+    return str(val).strip()
+
+
+def _report_from_model_dict(data: dict[object, object]) -> dict[str, str]:
+    """Map model JSON to QUERY_KEYS; tolerate different key casing."""
+    keymap: dict[str, object] = {}
+    for k, v in data.items():
+        if isinstance(k, str):
+            keymap[k.strip().lower()] = v
+    return {qk: _coerce_to_answer_str(keymap.get(qk.lower())) for qk in QUERY_KEYS}
+
+
 def _parse_analysis_json(raw: str) -> dict[str, str]:
-    """Parse batched JSON; tolerate fences and leading prose."""
-    cleaned = _strip_code_fence(raw)
+    """Parse JSON from model text; tolerate fences and leading prose."""
+    cleaned = _strip_code_fence(raw.strip())
     candidates = [cleaned]
     inner = _json_object_substring(cleaned)
     if inner and inner not in candidates:
@@ -216,83 +266,88 @@ def _parse_analysis_json(raw: str) -> dict[str, str]:
         except json.JSONDecodeError:
             continue
 
-    out: dict[str, str] = {}
     if not isinstance(data, dict):
-        return out
-    for key in QUERY_KEYS:
-        val = data.get(key)
-        out[key] = (val if isinstance(val, str) else "").strip()
-    return out
+        return {k: "" for k in QUERY_KEYS}
+    return _report_from_model_dict(data)
 
 
-def _batched_analysis_prompt(compressed_doc: str) -> str:
-    lines = [f'- "{k}": {q}' for k, q in PREDEFINED_QUERIES.items()]
-    q_block = "\n".join(lines)
-    return (
-        "Answer using ONLY <doc>. Extraction style: short labels, numbers, party names; "
-        "no paraphrase essays.\n"
-        "Per key: max 5 bullet lines; each line max 12 words; fragments OK; "
-        "if absent use exactly: Not found in document\n"
-        "Return ONLY one JSON object (string values).\n\n"
-        f"<doc>\n{compressed_doc}\n</doc>\n\n"
-        "Keys:\n"
-        f"{q_block}"
-    )
+def _single_pass_prompt(doc: str) -> str:
+    keys_example = ", ".join(f'"{k}": "…"' for k in QUERY_KEYS)
+
+    return f"""
+Read <doc> and extract legal clauses into structured JSON.
+
+Definitions:
+- termination: termination, cancellation, expiration, ending agreement
+- liability: liability, damages, indemnity, limitation of liability
+- payment: fees, billing, charges, compensation
+- confidentiality: confidentiality, NDA, non-disclosure, privacy
+- risks: penalties, unilateral rights, unusual obligations
+
+Rules:
+- Prefer copying exact phrases from the document
+- Use short bullet-style lines (newline separated)
+- Max ~3 bullets per field
+- Include partial matches if relevant
+- Only use "Not found in document" if absolutely nothing exists
+
+Return EXACT JSON format:
+{{{keys_example}}}
+
+<doc>
+{doc}
+</doc>
+"""
+
+
+def _normalize_report(parsed: dict[str, str]) -> dict[str, str]:
+    return {k: (parsed.get(k) or "").strip() or "Not found in document" for k in QUERY_KEYS}
+
+
+def extract_report_single_pass(llm: LLM, doc: str) -> dict[str, str]:
+    """One LLM call: full document → structured report."""
+    prompt = _single_pass_prompt(doc)
+    parsed_obj, raw = llm.generate_report_payload(prompt, max_output_tokens=3000)
+
+    print("\n===== RAW MODEL OUTPUT =====")
+    print(raw)
+    print("===== END RAW OUTPUT =====\n")
+    
+    if isinstance(parsed_obj, dict) and parsed_obj:
+        fields = _report_from_model_dict(parsed_obj)
+    else:
+        fields = _parse_analysis_json(raw)
+    return _normalize_report(fields)
 
 
 def analyze_document(llm: LLM | None = None, compressed_doc: str = "") -> dict[str, str]:
     """
-    Runs fixed queries over compressed document (NO RAG) in one model call.
-    Never receives the original full document — only merged extractions.
+    Back-compat alias: `compressed_doc` is treated as the full document text to analyze.
+    Single LLM call, no chunking.
     """
     client = llm or LLM()
-    prompt = _batched_analysis_prompt(compressed_doc)
-    raw = client.generate(prompt, max_output_tokens=400)
-    parsed = _parse_analysis_json(raw)
-
-    def _all_answered(d: dict[str, str]) -> bool:
-        return all(d.get(k) for k in QUERY_KEYS)
-
-    if _all_answered(parsed):
-        return parsed
-
-    retry_prompt = (
-        _batched_analysis_prompt(compressed_doc)
-        + "\n\nJSON only. No fences. No prose outside JSON."
-    )
-    raw2 = client.generate(retry_prompt, max_output_tokens=400)
-    parsed2 = _parse_analysis_json(raw2)
-
-    merged: dict[str, str] = {}
-    for k in QUERY_KEYS:
-        v = (parsed.get(k) or parsed2.get(k) or "").strip()
-        merged[k] = v if v else "Not found in document"
-    return merged
+    return extract_report_single_pass(client, compressed_doc)
 
 
 # ----------------------------
-# Main pipeline (RAG-free)
+# Main pipeline
 # ----------------------------
 def run_report_on_text(full_text: str, llm: LLM | None = None) -> dict[str, str]:
     """
-    Pipeline: clean → chunk → extract chunks (cached) → Python merge → one JSON analysis.
-    Original full text is not sent to the final query — only merged extractions.
+    clean → cache check → one LLM call (full doc) → JSON report.
     """
     client = llm or LLM()
-    cleaned = clean_text(full_text).strip()
+    cleaned = clean_text(full_text)
+    cleaned = preprocess_document(cleaned)
+    cleaned = cleaned.strip()
     if not cleaned:
         return {k: "No extractable text in the document." for k in PREDEFINED_QUERIES}
 
-    doc_key = _sha256_utf8(cleaned)
+    doc_key = _sha256_utf8(_REPORT_CACHE_SALT + "\n" + cleaned)
     cached_report = _report_cache.get(doc_key)
     if cached_report is not None:
         return cached_report
 
-    chunks = chunk_text(cleaned)
-    if not chunks:
-        return {k: "No extractable text in the document." for k in PREDEFINED_QUERIES}
-
-    compressed_doc = _build_compressed_document(client, chunks)
-    report = analyze_document(llm=client, compressed_doc=compressed_doc)
+    report = extract_report_single_pass(client, cleaned)
     _report_cache.set(doc_key, report)
     return report

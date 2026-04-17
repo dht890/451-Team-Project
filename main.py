@@ -130,6 +130,7 @@ async def analyze(file: UploadFile = File(...)):
         "content_type": file.content_type,
         "stored_as": f"/uploads/{safe_name}",
         "extracted_text_chars": len(extracted),
+        "estimated_tokens": len(extracted) // 4,  # Rough estimate
         "summary": summary,
         "report": report,
         "warning": extraction_warning,
