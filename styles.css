@@ -54,7 +54,7 @@ body {
 }
 
 .app {
-    max-width: 1200px;
+    max-width: 900px;
     margin: 0 auto;
     padding: 2rem 1.25rem 3rem;
 }
@@ -101,29 +101,6 @@ body {
     display: grid;
     gap: 1.25rem;
     align-items: start;
-}
-
-@media (min-width: 960px) {
-    .app__grid {
-        grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-        gap: 1.5rem;
-    }
-
-    .app__column--analysis .analysis-panel {
-        position: sticky;
-        top: 1rem;
-        max-height: calc(100vh - 2rem);
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-    }
-
-    .report-stack {
-        flex: 1 1 auto;
-        min-height: 0;
-        overflow-y: auto;
-        padding-right: 0.25rem;
-    }
 }
 
 .app__column {
