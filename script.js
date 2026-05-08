@@ -9,23 +9,20 @@ const input = document.getElementById("imageInput");
 const preview = document.getElementById("preview");
 const pdfPreview = document.getElementById("pdfPreview");
 const previewPlaceholder = document.getElementById("previewPlaceholder");
-const analysisEl = document.getElementById("analysis");
-const analysisOutputEl = document.getElementById("analysisOutput");
+
+const analysisBadgeEl = document.getElementById("analysisBadge");
+const analysisMetaEl = document.getElementById("analysisMeta");
+const analysisWarningEl = document.getElementById("analysisWarning");
+const analysisReportEl = document.getElementById("analysisReport");
 
 function ensurePort8000Banner() {
-  // If served from a dev server on the wrong port, guide users to 8000.
-  // (For file:// we already hardcode API_BASE to 8000.)
   if (window.location.protocol === "file:") return;
   if (window.location.port === "8000") return;
 
   const targetUrl = `${window.location.protocol}//${window.location.hostname}:8000`;
 
   const banner = document.createElement("div");
-  banner.style.margin = "12px 0";
-  banner.style.padding = "12px 14px";
-  banner.style.border = "1px solid rgba(255, 170, 0, 0.45)";
-  banner.style.borderRadius = "10px";
-  banner.style.background = "rgba(255, 170, 0, 0.08)";
+  banner.className = "dev-banner";
 
   const text = document.createElement("div");
   text.textContent = `This page is running on port ${window.location.port || "(default)"}; the backend expects port 8000.`;
@@ -33,11 +30,11 @@ function ensurePort8000Banner() {
   banner.append(text);
 
   const p = document.createElement("p");
-  p.textContent = "Run the command: uvicorn main:app --reload";
+  p.textContent = "Run: uvicorn main:app --reload";
   banner.append(p);
 
   const p2 = document.createElement("p");
-  p2.textContent = "Then click the button below to go to the correct port.";
+  p2.textContent = "Then open port 8000 so upload can reach /analyze.";
   banner.append(p2);
 
   const btn = document.createElement("button");
@@ -69,23 +66,58 @@ function revokeUrl() {
   }
 }
 
-function isPdfFile(file) {
-  const mime = (file.type || "").toLowerCase();
-  if (mime === "application/pdf" || mime === "application/x-pdf") return true;
-  return file.name?.toLowerCase().endsWith(".pdf") ?? false;
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
 }
 
-function setOutput(text) {
-  if (analysisOutputEl) {
-    analysisOutputEl.textContent = text;
-  } else {
-    analysisEl.textContent = text;
+function setBadge(mode, label) {
+  if (!analysisBadgeEl) return;
+  analysisBadgeEl.textContent = label;
+  analysisBadgeEl.classList.remove("badge--muted", "badge--active", "badge--error");
+  if (mode === "active") analysisBadgeEl.classList.add("badge--active");
+  else if (mode === "error") analysisBadgeEl.classList.add("badge--error");
+  else analysisBadgeEl.classList.add("badge--muted");
+}
+
+function clearMetaWarning() {
+  if (analysisMetaEl) {
+    analysisMetaEl.hidden = true;
+    analysisMetaEl.innerHTML = "";
+  }
+  if (analysisWarningEl) {
+    analysisWarningEl.hidden = true;
+    analysisWarningEl.textContent = "";
+    analysisWarningEl.classList.remove("analysis-alert--error");
   }
 }
 
+/** Turn plain multi-line answers into safe HTML paragraphs or a bullet list. */
+function formatAnswerHtml(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) {
+    return `<p>${escapeHtml("Not found in document.")}</p>`;
+  }
+
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const bulletLike = /^[\-\*•]\s+|^\d+[.)]\s+/;
+
+  const allBullets = lines.length > 0 && lines.every((l) => bulletLike.test(l));
+  if (allBullets) {
+    const items = lines.map((line) =>
+      escapeHtml(line.replace(bulletLike, "").trim()),
+    );
+    return `<ul>${items.map((t) => `<li>${t}</li>`).join("")}</ul>`;
+  }
+
+  return lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
+}
+
 /** Stable section order matching backend PREDEFINED_QUERIES keys. */
-function formatReportFromJson(report) {
-  if (!report || typeof report !== "object") return "";
+function renderReportCards(report) {
+  if (!analysisReportEl) return;
+
   const order = [
     "termination",
     "liability",
@@ -93,22 +125,210 @@ function formatReportFromJson(report) {
     "confidentiality",
     "risks",
   ];
-  const parts = [];
+
+  const frag = document.createDocumentFragment();
+
+  let any = false;
   for (const key of order) {
     if (!Object.prototype.hasOwnProperty.call(report, key)) continue;
+    any = true;
     const label = key
       .replace(/_/g, " ")
       .replace(/\b\w/g, (c) => c.toUpperCase());
-    parts.push(`## ${label}\n${String(report[key] ?? "").trim()}`);
+
+    const card = document.createElement("article");
+    card.className = "report-card";
+
+    const h3 = document.createElement("h3");
+    h3.className = "report-card__title";
+    h3.textContent = label;
+
+    const body = document.createElement("div");
+    body.className = "report-card__body";
+    body.innerHTML = formatAnswerHtml(report[key]);
+
+    card.append(h3, body);
+    frag.append(card);
   }
-  return parts.join("\n\n").trim();
+
+  analysisReportEl.innerHTML = "";
+  if (!any) {
+    const fallback = document.createElement("div");
+    fallback.className = "report-empty";
+    fallback.textContent = "No structured report returned.";
+    analysisReportEl.append(fallback);
+  } else {
+    analysisReportEl.append(frag);
+  }
+}
+
+function renderMarkdownishSummary(summary) {
+  if (!analysisReportEl) return;
+  const text = String(summary ?? "").trim();
+  if (!text) {
+    const empty = document.createElement("div");
+    empty.className = "report-empty";
+    empty.textContent = "No report returned.";
+    analysisReportEl.innerHTML = "";
+    analysisReportEl.append(empty);
+    return;
+  }
+
+  /** Split summary on ## headings from server markdown. */
+  const sections = [];
+  const lines = text.split("\n");
+  let currentTitle = null;
+  let buf = [];
+
+  function flush() {
+    if (!currentTitle && buf.length === 0) return;
+    sections.push({
+      title: currentTitle || "Summary",
+      body: buf.join("\n").trim(),
+    });
+    currentTitle = null;
+    buf = [];
+  }
+
+  for (const line of lines) {
+    const m = /^##\s+(.+)$/.exec(line.trim());
+    if (m) {
+      flush();
+      currentTitle = m[1].trim();
+    } else {
+      buf.push(line);
+    }
+  }
+  flush();
+
+  analysisReportEl.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  for (const { title, body } of sections) {
+    const card = document.createElement("article");
+    card.className = "report-card";
+    const h3 = document.createElement("h3");
+    h3.className = "report-card__title";
+    h3.textContent = title;
+    const div = document.createElement("div");
+    div.className = "report-card__body";
+    div.innerHTML = formatAnswerHtml(body);
+    card.append(h3, div);
+    frag.append(card);
+  }
+  analysisReportEl.append(frag);
+}
+
+function setLoadingState() {
+  setBadge("active", "Working");
+  clearMetaWarning();
+
+  if (analysisReportEl) {
+    analysisReportEl.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "report-loading";
+    wrap.innerHTML =
+      '<span class="report-loading__spin" aria-hidden="true"></span><span>Analyzing document…</span>';
+    wrap.setAttribute("role", "status");
+    analysisReportEl.append(wrap);
+  }
+}
+
+function setIdleState() {
+  setBadge("muted", "Ready");
+  clearMetaWarning();
+  if (analysisReportEl) {
+    analysisReportEl.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "report-empty";
+    p.id = "analysisEmpty";
+    p.textContent =
+      "Upload a document to see termination, liability, payment, confidentiality, and risk notes.";
+    analysisReportEl.append(p);
+  }
+}
+
+function setErrorState(message) {
+  setBadge("error", "Issue");
+  clearMetaWarning();
+
+  if (analysisWarningEl) {
+    analysisWarningEl.hidden = false;
+    analysisWarningEl.classList.add("analysis-alert--error");
+    analysisWarningEl.textContent = message;
+  }
+
+  if (analysisReportEl) {
+    analysisReportEl.innerHTML = "";
+    const hint = document.createElement("div");
+    hint.className = "report-empty";
+    hint.textContent = "Fix the warning above or check that the API is running.";
+    analysisReportEl.append(hint);
+  }
+}
+
+function renderAnalysisSuccess(data) {
+  const message = String(data.message ?? "").trim();
+  const summary = String(data.summary ?? "").trim();
+  const warning = String(data.warning ?? "").trim();
+  const model = String(data.model ?? "").trim();
+  const extractedChars = data.extracted_text_chars ?? data.extractedTextChars;
+
+  clearMetaWarning();
+  setBadge("active", "Done");
+
+  if (analysisMetaEl) {
+    const chips = [];
+
+    chips.push(document.createElement("span"));
+    chips[chips.length - 1].className = "chip";
+    chips[chips.length - 1].innerHTML = `<strong>File</strong> ${escapeHtml(message || "(upload)")}`;
+
+    if (model) {
+      const m = document.createElement("span");
+      m.className = "chip";
+      m.innerHTML = `<strong>Model</strong> ${escapeHtml(model)}`;
+      chips.push(m);
+    }
+
+    if (typeof extractedChars === "number") {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.innerHTML = `<strong>Extracted</strong> ${extractedChars.toLocaleString()} chars`;
+      chips.push(c);
+    }
+
+    analysisMetaEl.innerHTML = "";
+    for (const el of chips) analysisMetaEl.append(el);
+    analysisMetaEl.hidden = chips.length === 0;
+  }
+
+  if (analysisWarningEl && warning) {
+    analysisWarningEl.hidden = false;
+    analysisWarningEl.classList.remove("analysis-alert--error");
+    analysisWarningEl.textContent = warning;
+  }
+
+  const hasReport =
+    data.report &&
+    typeof data.report === "object" &&
+    Object.keys(data.report).length > 0;
+
+  if (hasReport) {
+    renderReportCards(data.report);
+  } else {
+    renderMarkdownishSummary(summary || "No report returned.");
+  }
+}
+
+function isPdfFile(file) {
+  const mime = (file.type || "").toLowerCase();
+  if (mime === "application/pdf" || mime === "application/x-pdf") return true;
+  return file.name?.toLowerCase().endsWith(".pdf") ?? false;
 }
 
 function setPreview(type, data) {
-  // Always start clean
   revokeUrl();
 
-  // Reset everything
   preview.removeAttribute("src");
   preview.alt = "";
   preview.hidden = true;
@@ -120,7 +340,6 @@ function setPreview(type, data) {
 
   previewPlaceholder.hidden = true;
 
-  // Render based on type
   if (type === "image") {
     preview.src = data.url;
     preview.alt = data.fileName
@@ -134,7 +353,6 @@ function setPreview(type, data) {
     pdfPreview.hidden = false;
     pdfPreview.style.display = "block";
   } else {
-    // fallback (no preview)
     previewPlaceholder.hidden = false;
   }
 }
@@ -142,10 +360,7 @@ function setPreview(type, data) {
 function clearPreview() {
   setPreview("none");
 }
-/**
- * Optional: POST the file to the FastAPI backend when it is running.
- * Safe to fail silently when the server is off (local file preview still works).
- */
+
 async function analyzeWithBackend(file) {
   const formData = new FormData();
   formData.append("file", file);
@@ -163,16 +378,16 @@ async function analyzeWithBackend(file) {
   return response.json();
 }
 
-/** Incremented on each selection to ignore stale async callbacks. */
 let currentFileToken = 0;
-input.addEventListener("change", () => {
+
+input?.addEventListener("change", () => {
   const file = input.files?.[0];
   const token = ++currentFileToken;
 
   clearPreview();
 
   if (!file) {
-    setOutput("—");
+    setIdleState();
     return;
   }
 
@@ -197,40 +412,29 @@ input.addEventListener("change", () => {
     setPreview("none");
   }
 
-  setOutput("Analyzing…");
+  setLoadingState();
 
   analyzeWithBackend(file)
     .then((data) => {
       if (token !== currentFileToken) return;
 
       if (!data || typeof data !== "object") {
-        setOutput(String(data));
+        renderAnalysisSuccess({
+          message: "",
+          summary: String(data),
+          warning: "",
+          model: "",
+          report: null,
+        });
         return;
       }
 
-      const message = String(data.message ?? "").trim();
-      const summary = String(data.summary ?? "").trim();
-      const warning = String(data.warning ?? "").trim();
-      const model = String(data.model ?? "").trim();
-      const extractedChars = data.extracted_text_chars ?? data.extractedTextChars;
-      const reportBody =
-        formatReportFromJson(data.report) || summary || "No report returned.";
-
-      const headerLines = [
-        message ? message : null,
-        model ? `Model: ${model}` : null,
-        typeof extractedChars === "number"
-          ? `Extracted text: ${extractedChars.toLocaleString()} chars`
-          : null,
-        warning ? `Warning: ${warning}` : null,
-      ].filter(Boolean);
-
-      setOutput(
-        (headerLines.length ? headerLines.join("\n") + "\n\n" : "") + reportBody
-      );
+      renderAnalysisSuccess(data);
     })
     .catch(() => {
       if (token !== currentFileToken) return;
-      setOutput("Failed to analyze the file. Is the backend running?");
+      setErrorState(
+        "Could not reach the analyzer. Start the API with uvicorn main:app --reload and open this page from port 8000.",
+      );
     });
 });

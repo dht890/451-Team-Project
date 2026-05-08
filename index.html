@@ -5,37 +5,73 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document Analyzer</title>
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0f1419" />
+    <title>Contract Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
     <main class="app">
         <header class="app__header">
-            <h1>Contract Analyzer</h1>
-            <p class="app__hint">Choose a PDF to preview. PDFs open in an embedded viewer (your browser’s PDF support).</p>
+            <div class="app__brand">
+                <span class="app__logo" aria-hidden="true">◆</span>
+                <div>
+                    <h1>Contract Analyzer</h1>
+                    <p class="app__hint">Upload a PDF or Word document for a structured summary of key legal clauses.</p>
+                </div>
+            </div>
         </header>
 
-        <section class="panel" aria-label="Upload">
-            <label class="file-label" for="imageInput">Upload PDF</label>
-            <input type="file" id="imageInput" accept="image/*,application/pdf" />
-        </section>
+        <div class="app__grid">
+            <div class="app__column app__column--docs">
+                <section class="panel panel--upload" aria-label="Upload">
+                    <div class="panel__head">
+                        <h2 class="panel__title">Document</h2>
+                    </div>
+                    <label class="upload-zone" for="imageInput">
+                        <span class="upload-zone__icon" aria-hidden="true">📄</span>
+                        <span class="upload-zone__text">
+                            <strong>Choose a file</strong>
+                            <span class="upload-zone__sub">PDF, DOCX, or image for preview</span>
+                        </span>
+                        <span class="upload-zone__cta">Browse</span>
+                    </label>
+                    <input class="upload-input" type="file" id="imageInput" accept="application/pdf,.pdf,image/*,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" />
+                    <p class="upload-note">PDFs open in the embedded viewer. Analysis uses extracted text (scanned PDFs may need OCR elsewhere).</p>
+                </section>
 
-        <section class="panel preview-panel" aria-label="Preview">
-            <h2>Preview</h2>
-            <div class="preview-frame">
-                <p id="previewPlaceholder" class="preview-placeholder">No file selected.</p>
-                <img id="preview" class="preview-image" alt="" hidden />
-                <iframe id="pdfPreview" class="preview-pdf" title="PDF preview" hidden></iframe>
+                <section class="panel preview-panel" aria-label="Preview">
+                    <div class="panel__head">
+                        <h2 class="panel__title">Preview</h2>
+                    </div>
+                    <div class="preview-frame">
+                        <p id="previewPlaceholder" class="preview-placeholder">No file selected.</p>
+                        <img id="preview" class="preview-image" alt="" hidden />
+                        <iframe id="pdfPreview" class="preview-pdf" title="PDF preview" hidden></iframe>
+                    </div>
+                </section>
             </div>
-        </section>
 
-        <section class="panel" aria-label="Metadata">
-            <div id="analysis">
-                <h2>Analysis</h2>
-                <pre id="analysisOutput" class="metadata-output" role="status" aria-live="polite"></pre>
+            <div class="app__column app__column--analysis">
+                <section class="panel analysis-panel" aria-label="Analysis results">
+                    <div class="panel__head panel__head--row">
+                        <h2 class="panel__title">Analysis</h2>
+                        <span id="analysisBadge" class="badge badge--muted">Ready</span>
+                    </div>
+
+                    <div id="analysisMeta" class="analysis-chips" hidden></div>
+                    <div id="analysisWarning" class="analysis-alert" role="alert" hidden></div>
+
+                    <div id="analysisReport" class="report-stack">
+                        <p class="report-empty" id="analysisEmpty">Upload a document to see termination, liability, payment, confidentiality, and risk notes.</p>
+                    </div>
+                </section>
             </div>
-        </section>
+        </div>
     </main>
 
     <script src="script.js"></script>
