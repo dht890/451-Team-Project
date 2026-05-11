@@ -1,4 +1,4 @@
-#main.py
+# main.py
 """
 Minimal FastAPI app: document upload + AI/LLM summary.
 
@@ -7,8 +7,10 @@ Run from this folder, then open the app in the browser (same origin as /analyze)
 
 Open: http://127.0.0.1:8000/
 """
- 
+
 from pathlib import Path
+import io
+import pandas as pd
 
 from docx import Document as DocxDocument
 from fastapi import FastAPI, File, UploadFile
@@ -18,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader
 
 from report import LLM, run_report_on_text
+
 
 def _safe_filename(filename: str | None) -> str:
     # Prevent path traversal; keep only the final component.
@@ -80,7 +83,10 @@ def health():
 
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(
+    file: UploadFile = File(...),
+    pricing_file: UploadFile | None = File(default=None),
+):
     safe_name = _safe_filename(file.filename)
     dest_path = UPLOAD_DIR / safe_name
 
@@ -104,12 +110,26 @@ async def analyze(file: UploadFile = File(...)):
     report: dict[str, str] | None = None
     summary_parts: list[str] = []
     llm_model: str | None = None
+    pricing_df: pd.DataFrame | None = None
+    pricing_warning: str | None = None
+
+    if pricing_file is not None:
+        try:
+            pricing_bytes = await pricing_file.read()
+            if pricing_bytes:
+                pricing_df = pd.read_csv(io.BytesIO(pricing_bytes))
+        except Exception as exc:  # noqa: BLE001
+            pricing_warning = (
+                f"Pricing CSV could not be read ({type(exc).__name__}). "
+                "Expected columns such as date,total_price,seats,usage."
+            )
+            print(pricing_warning, exc)
 
     if extracted.strip():
         try:
             llm = LLM()
             llm_model = llm.model
-            report = run_report_on_text(extracted, llm=llm)
+            report = run_report_on_text(extracted, llm=llm, pricing_df=pricing_df)
             for section_key, answer in report.items():
                 title = section_key.replace("_", " ").title()
                 summary_parts.append(f"## {title}\n{answer}")
@@ -121,6 +141,12 @@ async def analyze(file: UploadFile = File(...)):
     else:
         extraction_warning = extraction_warning or "No text extracted; report skipped."
 
+    if pricing_warning:
+        if extraction_warning:
+            extraction_warning = extraction_warning + " " + pricing_warning
+        else:
+            extraction_warning = pricing_warning
+
     summary = "\n\n".join(summary_parts) if summary_parts else ""
 
     return {
@@ -130,7 +156,6 @@ async def analyze(file: UploadFile = File(...)):
         "content_type": file.content_type,
         "stored_as": f"/uploads/{safe_name}",
         "extracted_text_chars": len(extracted),
-        "estimated_tokens": len(extracted) // 4,  # Rough estimate
         "summary": summary,
         "report": report,
         "warning": extraction_warning,

@@ -9,6 +9,8 @@ const input = document.getElementById("imageInput");
 const preview = document.getElementById("preview");
 const pdfPreview = document.getElementById("pdfPreview");
 const previewPlaceholder = document.getElementById("previewPlaceholder");
+const pricingInput = document.getElementById("pricingInput");
+const pricingFileStatusEl = document.getElementById("pricingFileStatus");
 
 const analysisBadgeEl = document.getElementById("analysisBadge");
 const analysisMetaEl = document.getElementById("analysisMeta");
@@ -93,6 +95,18 @@ function clearMetaWarning() {
   }
 }
 
+function updatePricingStatus() {
+  if (!pricingFileStatusEl) return;
+  const pricingFile = pricingInput?.files?.[0];
+  if (pricingFile) {
+    pricingFileStatusEl.hidden = false;
+    pricingFileStatusEl.textContent = `Selected CSV: ${pricingFile.name}`;
+  } else {
+    pricingFileStatusEl.hidden = false;
+    pricingFileStatusEl.textContent = "No CSV selected.";
+  }
+}
+
 /** Turn plain multi-line answers into safe HTML paragraphs or a bullet list. */
 function formatAnswerHtml(raw) {
   const text = String(raw ?? "").trim();
@@ -124,6 +138,9 @@ function renderReportCards(report) {
     "payment",
     "confidentiality",
     "risks",
+    "pricing_risk",
+    "price_anomalies",
+    "price_anomalies_warning",
   ];
 
   const frag = document.createDocumentFragment();
@@ -242,7 +259,7 @@ function setIdleState() {
     p.className = "report-empty";
     p.id = "analysisEmpty";
     p.textContent =
-      "Upload a document to see termination, liability, payment, confidentiality, and risk notes.";
+      "Upload a document(s) to see termination, liability, payment, confidentiality, risk notes, and optionally pricing anomaly findings.";
     analysisReportEl.append(p);
   }
 }
@@ -271,6 +288,7 @@ function renderAnalysisSuccess(data) {
   const summary = String(data.summary ?? "").trim();
   const warning = String(data.warning ?? "").trim();
   const model = String(data.model ?? "").trim();
+  const pricingFile = pricingInput?.files?.[0];
   const extractedChars = data.extracted_text_chars ?? data.extractedTextChars;
 
   clearMetaWarning();
@@ -288,6 +306,13 @@ function renderAnalysisSuccess(data) {
       m.className = "chip";
       m.innerHTML = `<strong>Model</strong> ${escapeHtml(model)}`;
       chips.push(m);
+    }
+
+    if (pricingFile) {
+      const p = document.createElement("span");
+      p.className = "chip";
+      p.innerHTML = `<strong>Pricing CSV</strong> ${escapeHtml(pricingFile.name)}`;
+      chips.push(p);
     }
 
     if (typeof extractedChars === "number") {
@@ -361,9 +386,12 @@ function clearPreview() {
   setPreview("none");
 }
 
-async function analyzeWithBackend(file) {
+async function analyzeWithBackend(file, pricingFile = null) {
   const formData = new FormData();
   formData.append("file", file);
+  if (pricingFile) {
+    formData.append("pricing_file", pricingFile);
+  }
 
   const analyzeUrl = API_BASE ? `${API_BASE}/analyze` : "/analyze";
   const response = await fetch(analyzeUrl, {
@@ -380,8 +408,9 @@ async function analyzeWithBackend(file) {
 
 let currentFileToken = 0;
 
-input?.addEventListener("change", () => {
-  const file = input.files?.[0];
+function runCurrentAnalysis() {
+  const file = input?.files?.[0];
+  const pricingFile = pricingInput?.files?.[0] || null;
   const token = ++currentFileToken;
 
   clearPreview();
@@ -414,7 +443,7 @@ input?.addEventListener("change", () => {
 
   setLoadingState();
 
-  analyzeWithBackend(file)
+  analyzeWithBackend(file, pricingFile)
     .then((data) => {
       if (token !== currentFileToken) return;
 
@@ -437,4 +466,18 @@ input?.addEventListener("change", () => {
         "Could not reach the analyzer. Start the API with uvicorn main:app --reload and open this page from port 8000.",
       );
     });
+}
+
+input?.addEventListener("change", () => {
+  runCurrentAnalysis();
 });
+
+pricingInput?.addEventListener("change", () => {
+  updatePricingStatus();
+
+  if (input?.files?.[0]) {
+    runCurrentAnalysis();
+  }
+});
+
+updatePricingStatus();

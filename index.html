@@ -44,6 +44,23 @@
                     <p class="upload-note">PDFs open in the embedded viewer. Analysis uses extracted text (scanned PDFs may need OCR elsewhere).</p>
                 </section>
 
+                <section class="panel panel--upload" aria-label="Pricing CSV upload">
+                    <div class="panel__head">
+                        <h2 class="panel__title">Pricing CSV</h2>
+                    </div>
+                    <label class="upload-zone" for="pricingInput">
+                        <span class="upload-zone__icon" aria-hidden="true">📊</span>
+                        <span class="upload-zone__text">
+                            <strong>Choose a CSV file</strong>
+                            <span class="upload-zone__sub">Optional pricing history for anomaly detection</span>
+                        </span>
+                        <span class="upload-zone__cta">Browse</span>
+                    </label>
+                    <input class="upload-input" type="file" id="pricingInput" accept=".csv,text/csv" />
+                    <p class="upload-note">Optional. Upload a CSV with pricing history to detect unusual price-growth patterns.</p>
+                    <p id="pricingFileStatus" class="upload-note" hidden>No CSV selected.</p>
+                </section>
+
                 <section class="panel preview-panel" aria-label="Preview">
                     <div class="panel__head">
                         <h2 class="panel__title">Preview</h2>
@@ -67,7 +84,7 @@
                     <div id="analysisWarning" class="analysis-alert" role="alert" hidden></div>
 
                     <div id="analysisReport" class="report-stack">
-                        <p class="report-empty" id="analysisEmpty">Upload a document to see termination, liability, payment, confidentiality, and risk notes.</p>
+                        <p class="report-empty" id="analysisEmpty">Upload a document to see termination, liability, payment, confidentiality, risk notes, and optional pricing anomaly findings.</p>
                     </div>
                 </section>
             </div>
