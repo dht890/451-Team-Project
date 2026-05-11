@@ -1,7 +1,8 @@
 #report.py
 """
 Legal document report: chunk extraction → Python merge → one batched JSON query.
-Optimized for low token use: small chunks, minimal overlap, compact prompts, caching.
+Optimized for low token use: compact prompts, caching, parallel per-chunk extraction,
+and larger chunks (fewer API round-trips) with overlap at boundaries.
 """
 
 from __future__ import annotations
@@ -10,7 +11,9 @@ import hashlib
 import json
 import os
 import re
+import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import google.genai as genai
 from google.genai.types import FinishReason
@@ -126,13 +129,28 @@ class _ReportLRUCache:
 
 _chunk_extraction_cache = _LRUCache(_CHUNK_CACHE_MAX)
 _report_cache = _ReportLRUCache(_REPORT_CACHE_MAX)
+_chunk_cache_lock = threading.Lock()
+
+# Fewer round-trips than tiny chunks; overlap keeps clause boundaries from being split cleanly.
+_CHUNK_MAX_CHARS = 1200
+_CHUNK_OVERLAP = 72
+# Parallel extractions; cap to limit burst rate against the API.
+_CHUNK_EXTRACT_MAX_WORKERS = 8
+
+_MERGE_LINE_PREFIX_RE = re.compile(r"^[-*•\d.)]+\s*")
 
 
 # ---------
 # Chunking
 # ---------
-def chunk_text(text: str, max_chars: int = 800, overlap: int = 50) -> list[str]:
-    cleaned = clean_text(text).strip()
+def chunk_text(
+    text: str,
+    max_chars: int = _CHUNK_MAX_CHARS,
+    overlap: int = _CHUNK_OVERLAP,
+    *,
+    already_clean: bool = False,
+) -> list[str]:
+    cleaned = text.strip() if already_clean else clean_text(text).strip()
     if not cleaned:
         return []
 
@@ -202,7 +220,8 @@ class LLM:
 # ----------------------------
 def _extract_chunk(llm: LLM, chunk: str) -> str:
     ck = _sha256_utf8(chunk)
-    hit = _chunk_extraction_cache.get(ck)
+    with _chunk_cache_lock:
+        hit = _chunk_extraction_cache.get(ck)
     if hit is not None:
         return hit
 
@@ -213,7 +232,8 @@ def _extract_chunk(llm: LLM, chunk: str) -> str:
         f"{chunk}"
     )
     out = llm.generate(prompt, max_output_tokens=1024)
-    _chunk_extraction_cache.set(ck, out)
+    with _chunk_cache_lock:
+        _chunk_extraction_cache.set(ck, out)
     return out
 
 
@@ -228,7 +248,7 @@ def _merge_extractions_python(extractions: list[str]) -> str:
             if not line:
                 continue
             # strip bullet prefixes for dedup stability
-            normalized = re.sub(r"^[-*•\d.)]+\s*", "", line).strip().lower()
+            normalized = _MERGE_LINE_PREFIX_RE.sub("", line).strip().lower()
             if not normalized or normalized in seen_keys:
                 continue
             seen_keys.add(normalized)
@@ -238,9 +258,24 @@ def _merge_extractions_python(extractions: list[str]) -> str:
 
 
 def _build_compressed_document(llm: LLM, chunks: list[str]) -> str:
-    extractions = [_extract_chunk(llm, c) for c in chunks]
-    if len(extractions) == 1:
-        return extractions[0].strip()
+    if not chunks:
+        return ""
+    if len(chunks) == 1:
+        return _extract_chunk(llm, chunks[0]).strip()
+
+    n = len(chunks)
+    workers = min(_CHUNK_EXTRACT_MAX_WORKERS, n)
+    extractions: list[str] = [""] * n
+
+    def _run(i: int, c: str) -> tuple[int, str]:
+        return i, _extract_chunk(llm, c)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_run, i, c) for i, c in enumerate(chunks)]
+        for fut in as_completed(futures):
+            i, text = fut.result()
+            extractions[i] = text
+
     return _merge_extractions_python(extractions)
 
 
@@ -358,7 +393,7 @@ def run_report_on_text(
         if cached_report is not None:
             return _finalize_report_payload(cached_report)
 
-    chunks = chunk_text(cleaned)
+    chunks = chunk_text(cleaned, already_clean=True)
     if not chunks:
         return {k: "No extractable text in the document." for k in QUERY_KEYS}
 
