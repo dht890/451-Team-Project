@@ -13,6 +13,7 @@ import re
 from collections import OrderedDict
 
 import google.genai as genai
+from google.genai.types import FinishReason
 from dotenv import load_dotenv
 
 import pandas as pd
@@ -160,21 +161,40 @@ def chunk_text(text: str, max_chars: int = 800, overlap: int = 50) -> list[str]:
 # ------------
 # LLM wrapper
 # ------------
+def _response_hit_output_limit(response: object) -> bool:
+    """True when the model stopped because the output token budget was exhausted."""
+    cands = getattr(response, "candidates", None) or []
+    if not cands:
+        return False
+    fr = getattr(cands[0], "finish_reason", None)
+    return fr == FinishReason.MAX_TOKENS
+
+
 class LLM:
     def __init__(self, model: str | None = None) -> None:
         self.model = model or os.environ.get("GOOGLE_MODEL", "gemini-2.5-flash")
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    def generate(self, prompt: str, *, max_output_tokens: int = 500) -> str:
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config={
-                "temperature": 0.1,
-                "max_output_tokens": max_output_tokens,
-            },
-        )
-        return (response.text or "").strip()
+    def generate(self, prompt: str, *, max_output_tokens: int = 2048) -> str:
+        budget = max(1, max_output_tokens)
+        last_text = ""
+        for attempt in range(2):
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config={
+                    "temperature": 0.1,
+                    "max_output_tokens": budget,
+                },
+            )
+            last_text = (response.text or "").strip()
+            if not _response_hit_output_limit(response) or attempt == 1:
+                return last_text
+            # One retry with a larger cap so batched JSON / long extractions are not cut off.
+            doubled = min(max(budget * 2, budget + 2048), 16384)
+            if doubled <= budget:
+                return last_text
+            budget = doubled
 
 
 # ----------------------------
@@ -192,7 +212,7 @@ def _extract_chunk(llm: LLM, chunk: str) -> str:
         "no full sentences; copy terms/numbers when present.\n\n"
         f"{chunk}"
     )
-    out = llm.generate(prompt, max_output_tokens=500)
+    out = llm.generate(prompt, max_output_tokens=1024)
     _chunk_extraction_cache.set(ck, out)
     return out
 
@@ -288,7 +308,7 @@ def analyze_document(llm: LLM | None = None, compressed_doc: str = "") -> dict[s
     """
     client = llm or LLM()
     prompt = _batched_analysis_prompt(compressed_doc)
-    raw = client.generate(prompt, max_output_tokens=1600)
+    raw = client.generate(prompt, max_output_tokens=8192)
     parsed = _parse_analysis_json(raw)
 
     def _all_answered(d: dict[str, str]) -> bool:
@@ -304,7 +324,7 @@ def analyze_document(llm: LLM | None = None, compressed_doc: str = "") -> dict[s
         _batched_analysis_prompt(compressed_doc)
         + "\n\nJSON only. No fences. No prose outside JSON."
     )
-    raw2 = client.generate(retry_prompt, max_output_tokens=1600)
+    raw2 = client.generate(retry_prompt, max_output_tokens=8192)
     parsed2 = _parse_analysis_json(raw2)
 
     merged: dict[str, str] = {}
