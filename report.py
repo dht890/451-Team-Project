@@ -16,7 +16,6 @@ import google.genai as genai
 from dotenv import load_dotenv
 
 import pandas as pd
-from anomaly_price_detector import analyze_price_history
 
 load_dotenv()
 
@@ -32,6 +31,26 @@ PREDEFINED_QUERIES = {
 }
 
 QUERY_KEYS = tuple(PREDEFINED_QUERIES.keys())
+
+_OPTIONAL_REPORT_KEYS = ("price_anomalies", "price_anomalies_warning")
+
+
+def _normalize_cached_report(cached: dict[str, str]) -> dict[str, str]:
+    """Ensure cached payloads always include core keys (avoids empty UI on stale cache)."""
+    out: dict[str, str] = {}
+    for k in QUERY_KEYS:
+        v = cached.get(k)
+        s = (v if isinstance(v, str) else str(v or "")).strip()
+        out[k] = s if s else "Not found in document"
+    for k in _OPTIONAL_REPORT_KEYS:
+        if k not in cached:
+            continue
+        v = cached.get(k)
+        s = (v if isinstance(v, str) else str(v or "")).strip()
+        if s:
+            out[k] = s
+    return out
+
 
 # LRU caps to avoid unbounded memory on long sessions
 _CHUNK_CACHE_MAX = 2000
@@ -289,23 +308,26 @@ def run_report_on_text(
     client = llm or LLM()
     cleaned = clean_text(full_text).strip()
     if not cleaned:
-        return {k: "No extractable text in the document." for k in PREDEFINED_QUERIES}
+        return {k: "No extractable text in the document." for k in QUERY_KEYS}
 
     doc_key: str | None = None
     if pricing_df is None or pricing_df.empty:
         doc_key = _sha256_utf8(cleaned)
         cached_report = _report_cache.get(doc_key)
         if cached_report is not None:
-            return cached_report
+            return _normalize_cached_report(cached_report)
 
     chunks = chunk_text(cleaned)
     if not chunks:
-        return {k: "No extractable text in the document." for k in PREDEFINED_QUERIES}
+        return {k: "No extractable text in the document." for k in QUERY_KEYS}
 
     compressed_doc = _build_compressed_document(client, chunks)
     results = analyze_document(llm=client, compressed_doc=compressed_doc)
 
     if pricing_df is not None and not pricing_df.empty:
+        # Lazy import: scikit-learn is heavy; document-only analysis should not load it.
+        from anomaly_price_detector import analyze_price_history
+
         try:
             pricing_result = analyze_price_history(pricing_df)
             results["price_anomalies"] = (
@@ -318,5 +340,5 @@ def run_report_on_text(
                 f"The analysis failed: {type(exc).__name__}: {exc}"
             )
     if doc_key is not None:
-        _report_cache.set(doc_key, results)
+        _report_cache.set(doc_key, dict(results))
     return results

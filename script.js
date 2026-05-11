@@ -32,7 +32,7 @@ function ensurePort8000Banner() {
   banner.append(text);
 
   const p = document.createElement("p");
-  p.textContent = "Run: uvicorn main:app --reload";
+  p.textContent = "Run: python dev_server.py (from the project folder)";
   banner.append(p);
 
   const p2 = document.createElement("p");
@@ -463,7 +463,7 @@ function runCurrentAnalysis() {
     .catch(() => {
       if (token !== currentFileToken) return;
       setErrorState(
-        "Could not reach the analyzer. Start the API with uvicorn main:app --reload and open this page from port 8000.",
+        "Could not reach the analyzer. Start the API with python dev_server.py from the project folder and open this page from port 8000.",
       );
     });
 }

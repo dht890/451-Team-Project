@@ -3,7 +3,10 @@
 Minimal FastAPI app: document upload + AI/LLM summary.
 
 Run from this folder, then open the app in the browser (same origin as /analyze):
-  uvicorn main:app --reload
+  python dev_server.py
+
+(Uses reload with venv/uploads excluded so WatchFiles does not restart on site-packages
+changes—common on Windows + OneDrive. Plain ``uvicorn main:app --reload`` can loop.)
 
 Open: http://127.0.0.1:8000/
 """
