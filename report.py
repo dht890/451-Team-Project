@@ -35,18 +35,37 @@ QUERY_KEYS = tuple(PREDEFINED_QUERIES.keys())
 _OPTIONAL_REPORT_KEYS = ("price_anomalies", "price_anomalies_warning")
 
 
-def _normalize_cached_report(cached: dict[str, str]) -> dict[str, str]:
-    """Ensure cached payloads always include core keys (avoids empty UI on stale cache)."""
+def _coerce_analysis_value(val: object) -> str:
+    """Turn model JSON values into plain text for each report section."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, bool):
+        return "yes" if val else "no"
+    if isinstance(val, int | float):
+        return str(val)
+    if isinstance(val, list | tuple):
+        parts = [_coerce_analysis_value(x) for x in val]
+        return "\n".join(p for p in parts if p)
+    if isinstance(val, dict):
+        try:
+            return json.dumps(val, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(val)
+    return str(val).strip()
+
+
+def _finalize_report_payload(src: dict[str, object]) -> dict[str, str]:
+    """Always emit QUERY_KEYS plus optional pricing keys (stable API + UI)."""
     out: dict[str, str] = {}
     for k in QUERY_KEYS:
-        v = cached.get(k)
-        s = (v if isinstance(v, str) else str(v or "")).strip()
+        s = _coerce_analysis_value(src.get(k)).strip()
         out[k] = s if s else "Not found in document"
     for k in _OPTIONAL_REPORT_KEYS:
-        if k not in cached:
+        if k not in src:
             continue
-        v = cached.get(k)
-        s = (v if isinstance(v, str) else str(v or "")).strip()
+        s = _coerce_analysis_value(src.get(k)).strip()
         if s:
             out[k] = s
     return out
@@ -146,7 +165,7 @@ class LLM:
         self.model = model or os.environ.get("GOOGLE_MODEL", "gemini-2.5-flash")
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    def generate(self, prompt: str, *, max_output_tokens: int = 300) -> str:
+    def generate(self, prompt: str, *, max_output_tokens: int = 500) -> str:
         response = self.client.models.generate_content(
             model=self.model,
             contents=prompt,
@@ -173,7 +192,7 @@ def _extract_chunk(llm: LLM, chunk: str) -> str:
         "no full sentences; copy terms/numbers when present.\n\n"
         f"{chunk}"
     )
-    out = llm.generate(prompt, max_output_tokens=220)
+    out = llm.generate(prompt, max_output_tokens=500)
     _chunk_extraction_cache.set(ck, out)
     return out
 
@@ -243,8 +262,7 @@ def _parse_analysis_json(raw: str) -> dict[str, str]:
     if not isinstance(data, dict):
         return out
     for key in QUERY_KEYS:
-        val = data.get(key)
-        out[key] = (val if isinstance(val, str) else "").strip()
+        out[key] = _coerce_analysis_value(data.get(key))
     return out
 
 
@@ -270,20 +288,23 @@ def analyze_document(llm: LLM | None = None, compressed_doc: str = "") -> dict[s
     """
     client = llm or LLM()
     prompt = _batched_analysis_prompt(compressed_doc)
-    raw = client.generate(prompt, max_output_tokens=400)
+    raw = client.generate(prompt, max_output_tokens=1600)
     parsed = _parse_analysis_json(raw)
 
     def _all_answered(d: dict[str, str]) -> bool:
-        return all(d.get(k) for k in QUERY_KEYS)
+        return all((d.get(k) or "").strip() for k in QUERY_KEYS)
 
     if _all_answered(parsed):
-        return parsed
+        return {
+            k: (parsed.get(k) or "").strip() or "Not found in document"
+            for k in QUERY_KEYS
+        }
 
     retry_prompt = (
         _batched_analysis_prompt(compressed_doc)
         + "\n\nJSON only. No fences. No prose outside JSON."
     )
-    raw2 = client.generate(retry_prompt, max_output_tokens=400)
+    raw2 = client.generate(retry_prompt, max_output_tokens=1600)
     parsed2 = _parse_analysis_json(raw2)
 
     merged: dict[str, str] = {}
@@ -315,7 +336,7 @@ def run_report_on_text(
         doc_key = _sha256_utf8(cleaned)
         cached_report = _report_cache.get(doc_key)
         if cached_report is not None:
-            return _normalize_cached_report(cached_report)
+            return _finalize_report_payload(cached_report)
 
     chunks = chunk_text(cleaned)
     if not chunks:
@@ -339,6 +360,7 @@ def run_report_on_text(
             results["price_anomalies"] = (
                 f"The analysis failed: {type(exc).__name__}: {exc}"
             )
+    finalized = _finalize_report_payload(results)
     if doc_key is not None:
-        _report_cache.set(doc_key, dict(results))
-    return results
+        _report_cache.set(doc_key, dict(finalized))
+    return finalized
