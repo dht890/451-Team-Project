@@ -8,12 +8,3 @@
 7. run: ```python dev_server.py```  
    (This wraps uvicorn reload with `venv` and `uploads` excluded from the file watcher. Plain `uvicorn main:app --reload` often spams reloads on Windows—especially under OneDrive—because `site-packages` files appear to change.)
 8. follow the link ```http://127.0.0.1:8000```
-
-if you get this message:
-```
-INFO:     Will watch for changes in these directories: ['C:\\Users\\david\\Downloads\\451-Team-Project-main']
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [16848] using WatchFiles
-ERROR:    Error loading ASGI app. Could not import module "main".
-```
-change directories with ```cd 451-Team-Project```
